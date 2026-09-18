@@ -13,7 +13,8 @@
 # un solo lugar las tres tareas que se hacen a mano en este proyecto:
 #   - ver pending_scores.json para copiarlo a un chat de IA
 #   - pegar el resultado puntuado (corre "score --import" por vos)
-#   - agregar una wallet nueva al roster (corre "discover --add" por vos)
+#   - agregar un trader por @usuario O por wallet (resuelve el handle solo,
+#     via fomoapi.io, antes de correr "discover --add")
 #
 # Start Command en Render: python3 server_fomo_radar.py
 
@@ -26,6 +27,9 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import unquote_plus
 
@@ -71,17 +75,57 @@ def lanzar(nombre, comando):
         time.sleep(10)
 
 
+def es_wallet(valor):
+    return valor.lower().startswith("0x") and len(valor) == 42
+
+
+def resolver_wallet(entrada):
+    # Devuelve (wallet, error). Si "entrada" ya es una wallet, la devuelve tal
+    # cual. Si es un @usuario, la resuelve via fomoapi.io (misma fuente que
+    # usa el resto del proyecto) y devuelve la wallet EVM (Robinhood Chain).
+    valor = entrada.strip().lstrip("@")
+    if es_wallet(valor):
+        return valor, None
+    key = os.environ.get("FOMOAPI_KEY", "")
+    if not key:
+        return None, "No se puede resolver un @usuario sin FOMOAPI_KEY configurada en Render. Pegue la wallet (0x...) directamente."
+    try:
+        req = urllib.request.Request(
+            "https://api.fomoapi.io/v2/users/" + urllib.parse.quote(valor),
+            headers={"authorization": "Bearer " + key},
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            datos = json.loads(resp.read().decode("utf-8"))
+        wallet = (datos.get("wallets") or {}).get("evm")
+        if not wallet:
+            return None, "fomoapi.io conoce a @" + valor + " pero no tiene una wallet EVM (Robinhood Chain) para esa cuenta."
+        return wallet, None
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return None, "fomoapi.io no conoce a @" + valor + "."
+        if exc.code == 401:
+            return None, "FOMOAPI_KEY invalida (401)."
+        if exc.code == 402:
+            return None, "Sin creditos en fomoapi.io para resolver el handle (402)."
+        return None, "Error consultando fomoapi.io: HTTP " + str(exc.code)
+    except Exception as exc:
+        return None, "Error consultando fomoapi.io: " + str(exc)
+
+
+# Colores del club (celeste y blanco), sin usar el escudo real (derechos de
+# autor). Fondo negro pedido, con esos colores como acento.
 ESTILO = """
 <style>
-body { font-family: -apple-system, Arial, sans-serif; max-width: 720px; margin: 30px auto; padding: 0 16px; color: #222; }
-h1 { font-size: 22px; }
-h2 { font-size: 17px; margin-top: 36px; border-top: 1px solid #ddd; padding-top: 20px; }
-textarea, input[type=text] { width: 100%; font-family: monospace; font-size: 14px; box-sizing: border-box; padding: 8px; }
+body { font-family: -apple-system, Arial, sans-serif; max-width: 720px; margin: 0 auto; padding: 0 16px 30px; background: #000; color: #eaeaea; }
+.franja { height: 10px; margin: 0 -16px 24px; background: repeating-linear-gradient(90deg, #6ecdf0 0 22px, #ffffff 22px 44px); }
+h1 { font-size: 24px; color: #6ecdf0; letter-spacing: 0.5px; }
+h2 { font-size: 17px; margin-top: 36px; border-top: 1px solid #234; padding-top: 20px; color: #6ecdf0; }
+textarea, input[type=text] { width: 100%; font-family: monospace; font-size: 14px; box-sizing: border-box; padding: 8px; background: #111; color: #eaeaea; border: 1px solid #345; border-radius: 4px; }
 textarea { height: 160px; }
-button { padding: 10px 18px; font-size: 15px; margin-top: 10px; cursor: pointer; }
-.ayuda { color: #666; font-size: 14px; }
-a.boton { display: inline-block; padding: 8px 14px; background: #eee; border-radius: 6px; text-decoration: none; color: #222; margin-top: 6px; }
-pre { background: #f5f5f5; padding: 12px; overflow-x: auto; white-space: pre-wrap; }
+button { padding: 10px 18px; font-size: 15px; margin-top: 10px; cursor: pointer; background: #6ecdf0; color: #000; border: none; border-radius: 6px; font-weight: bold; }
+.ayuda { color: #aab; font-size: 14px; }
+a.boton { display: inline-block; padding: 8px 14px; background: #6ecdf0; border-radius: 6px; text-decoration: none; color: #000; margin-top: 6px; font-weight: bold; }
+pre { background: #111; padding: 12px; overflow-x: auto; white-space: pre-wrap; color: #dde; border: 1px solid #345; border-radius: 4px; }
 </style>
 """
 
@@ -89,6 +133,7 @@ PAGINA_INICIO = """<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Panel Satelite</title>%s</head>
 <body>
+<div class="franja"></div>
 <h1>Panel del bot</h1>
 <p class="ayuda">Todo lo que se hace a mano en este proyecto, en un solo lugar. No hace falta terminal.</p>
 
@@ -118,15 +163,15 @@ del bot. Sin este paso, es como si no existieran todavia para el.
 <h2>3. Agregar un trader al roster</h2>
 <p class="ayuda">
 El bot por default solo sigue a la lista curada externa (la de "trenches").
-Si conoce o encuentra a alguien mas que le interese seguir por su cuenta, este
-boton le dice al bot "empeza a rastrear tambien a esta wallet". Ojo: pide la
-<b>direccion de la wallet</b> (algo como 0x1234...), no el @usuario de fomo o
-Twitter. Si solo tiene el handle, busquelo antes en fomo.family o GMGN para
-conseguir la direccion. Una vez agregada, todavia no tiene puntaje -- para eso
-hay que repetir despues los pasos 1 y 2.
+Si conoce o encuentra a alguien mas que le interese seguir por su cuenta,
+escriba su <b>@usuario</b> aca abajo (o pegue directamente la wallet 0x... si
+ya la tiene) y el boton resuelve el handle y lo agrega solo. Resolver un
+@usuario tiene un costo de creditos de fomoapi.io mas alto que el resto del
+bot, asi que no lo use a lo loco. Una vez agregado, todavia no tiene puntaje
+-- para eso hay que repetir despues los pasos 1 y 2.
 </p>
 <form method="POST" action="/agregar">
-<input type="text" name="wallet" placeholder="0x...">
+<input type="text" name="entrada" placeholder="@usuario o 0x...">
 <br><button type="submit">Agregar al roster</button>
 </form>
 
@@ -145,6 +190,7 @@ class Handler(BaseHTTPRequestHandler):
     def _pagina_resultado(self, titulo, salida):
         pagina = (
             "<!doctype html><html><head><meta charset=\"utf-8\">" + ESTILO + "</head><body>"
+            + "<div class=\"franja\"></div>"
             + "<h1>" + html.escape(titulo) + "</h1>"
             + "<pre>" + html.escape(salida) + "</pre>"
             + "<p><a class=\"boton\" href=\"/\">Volver al inicio</a></p>"
@@ -169,8 +215,6 @@ class Handler(BaseHTTPRequestHandler):
                     self._texto(f.read(), "application/json; charset=utf-8")
             else:
                 self._texto("Todavia no existe " + PENDING_FILE + ". Esperar al proximo ciclo de fomo-radar run.")
-        elif self.path in ("/", "/inicio", "/panel"):
-            self._texto(PAGINA_INICIO, "text/html; charset=utf-8")
         else:
             self._texto(PAGINA_INICIO, "text/html; charset=utf-8")
 
@@ -202,22 +246,23 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if self.path.startswith("/agregar"):
-            wallet = campos.get("wallet", "").strip()
-            if not wallet.startswith("0x") or len(wallet) != 42:
-                self._pagina_resultado(
-                    "Eso no parece una wallet valida",
-                    "Se espera una direccion 0x... de 42 caracteres. Recibido: " + wallet,
-                )
+            entrada = campos.get("entrada", campos.get("wallet", "")).strip()
+            if not entrada:
+                self._pagina_resultado("Falta el dato", "Escriba un @usuario o pegue una wallet 0x...")
+                return
+            wallet, error = resolver_wallet(entrada)
+            if error:
+                self._pagina_resultado("No se pudo resolver", error)
                 return
             try:
                 resultado = subprocess.run(
                     ["fomo-radar", "discover", "--add", wallet],
                     capture_output=True, text=True, timeout=60,
                 )
-                salida = resultado.stdout + "\n" + resultado.stderr
+                salida = "Resuelto a: " + wallet + "\n\n" + resultado.stdout + "\n" + resultado.stderr
             except Exception as exc:
-                salida = "Error agregando la wallet: " + str(exc)
-            self._pagina_resultado("Wallet agregada", salida)
+                salida = "Resuelto a: " + wallet + "\n\nError agregando la wallet: " + str(exc)
+            self._pagina_resultado("Trader agregado", salida)
             return
 
         self._texto("no encontrado", codigo=404)
