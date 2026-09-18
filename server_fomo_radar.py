@@ -43,3 +43,49 @@ def activar_wal():
             con.close()
             print("[wrapper] WAL activado en " + ruta + " (modo: " + str(modo) + ")", flush=True)
         except Exception as exc:
+            print("[wrapper] no se pudo activar WAL en " + ruta + ": " + str(exc), flush=True)
+    if not encontrados:
+        print("[wrapper] todavia no hay archivo de base de datos (normal en el primer arranque)", flush=True)
+
+
+def lanzar(nombre, comando):
+    # Arranca un comando de fomo-radar y lo reinicia solo si se cae.
+    while True:
+        print("[wrapper] arrancando: " + nombre, flush=True)
+        try:
+            p = subprocess.Popen(comando, stdout=sys.stdout, stderr=sys.stderr)
+            PROCESOS.append(p)
+            p.wait()
+            print("[wrapper] " + nombre + " termino con codigo " + str(p.returncode) + ", reintentando en 10s", flush=True)
+        except Exception as exc:
+            print("[wrapper] error lanzando " + nombre + ": " + str(exc), flush=True)
+        time.sleep(10)
+
+
+class Ping(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"fomo-radar wrapper: OK")
+
+    def do_HEAD(self):
+        self.send_response(200)
+        self.end_headers()
+
+    def log_message(self, *args):
+        pass
+
+
+if __name__ == "__main__":
+    activar_wal()
+
+    threading.Thread(target=lanzar, args=("fomo-radar run", ["fomo-radar", "run"]), daemon=True).start()
+
+    if os.environ.get("TELEGRAM_BOT_TOKEN"):
+        threading.Thread(target=lanzar, args=("fomo-radar bot", ["fomo-radar", "bot"]), daemon=True).start()
+    else:
+        print("[wrapper] TELEGRAM_BOT_TOKEN no seteado, no arranco el bot", flush=True)
+
+    print("[wrapper] sirviendo ping en el puerto " + str(PORT), flush=True)
+    HTTPServer(("0.0.0.0", PORT), Ping).serve_forever()
