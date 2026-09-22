@@ -9,12 +9,21 @@
 # Sin WAL, uno puede quedar esperando al otro en silencio. Se activa una vez
 # al arrancar, es una propiedad del archivo, no de cada conexion.
 #
+# MEMORIA: el plan free de Render no muestra el grafico de Metrics, asi que
+# este wrapper mide su propia memoria (via /proc) y la loguea cada 2 minutos,
+# para poder ver si el contenedor muere por quedarse sin RAM (limite: 512 MB).
+#
 # PANEL: sin acceso a terminal (plan gratis de Render), esta pagina junta en
 # un solo lugar las tres tareas que se hacen a mano en este proyecto:
 #   - ver pending_scores.json para copiarlo a un chat de IA
 #   - pegar el resultado puntuado (corre "score --import" por vos)
 #   - agregar un trader por @usuario O por wallet (resuelve el handle solo,
 #     via fomoapi.io, antes de correr "discover --add")
+#
+# NOTA TECNICA: este archivo evita a proposito los bloques de texto con
+# comillas triples (""") para HTML/CSS largos -- un pegado anterior en el
+# editor web de GitHub corrompio uno y tiro un SyntaxError en el deploy.
+# Todo el HTML se arma con listas de lineas + join(), que es a prueba de eso.
 #
 # Start Command en Render: python3 server_fomo_radar.py
 
@@ -59,6 +68,36 @@ def activar_wal():
             print("[wrapper] no se pudo activar WAL en " + ruta + ": " + str(exc), flush=True)
     if not encontrados:
         print("[wrapper] todavia no hay archivo de base de datos (normal en el primer arranque)", flush=True)
+
+
+def memoria_total_mb():
+    # Lee VmRSS de /proc para el wrapper y cada subproceso vivo (fomo-radar run,
+    # fomo-radar bot). Sin esto no hay forma de ver la memoria real en el plan
+    # gratis de Render, que no muestra el grafico de Metrics.
+    total_kb = 0
+    pids = [os.getpid()] + [p.pid for p in PROCESOS if p.poll() is None]
+    for pid in pids:
+        try:
+            with open("/proc/%s/status" % pid) as f:
+                for linea in f:
+                    if linea.startswith("VmRSS:"):
+                        total_kb += int(linea.split()[1])
+                        break
+        except Exception:
+            pass
+    return total_kb / 1024.0
+
+
+def monitor_memoria():
+    # Log cada 2 minutos. El plan free de Render da 512 MB -- si esto se acerca
+    # o supera ese numero antes de que el contenedor muera, confirma la causa.
+    while True:
+        try:
+            mb = memoria_total_mb()
+            print("[wrapper] memoria total aprox: %.0f MB (limite del plan free: 512 MB)" % mb, flush=True)
+        except Exception as exc:
+            print("[wrapper] no se pudo medir memoria: %s" % exc, flush=True)
+        time.sleep(120)
 
 
 def lanzar(nombre, comando):
@@ -114,68 +153,74 @@ def resolver_wallet(entrada):
 
 # Colores del club (celeste y blanco), sin usar el escudo real (derechos de
 # autor). Fondo negro pedido, con esos colores como acento.
-ESTILO = """
-<style>
-body { font-family: -apple-system, Arial, sans-serif; max-width: 720px; margin: 0 auto; padding: 0 16px 30px; background: #000; color: #eaeaea; }
-.franja { height: 10px; margin: 0 -16px 24px; background: repeating-linear-gradient(90deg, #6ecdf0 0 22px, #ffffff 22px 44px); }
-h1 { font-size: 24px; color: #6ecdf0; letter-spacing: 0.5px; }
-h2 { font-size: 17px; margin-top: 36px; border-top: 1px solid #234; padding-top: 20px; color: #6ecdf0; }
-textarea, input[type=text] { width: 100%; font-family: monospace; font-size: 14px; box-sizing: border-box; padding: 8px; background: #111; color: #eaeaea; border: 1px solid #345; border-radius: 4px; }
-textarea { height: 160px; }
-button { padding: 10px 18px; font-size: 15px; margin-top: 10px; cursor: pointer; background: #6ecdf0; color: #000; border: none; border-radius: 6px; font-weight: bold; }
-.ayuda { color: #aab; font-size: 14px; }
-a.boton { display: inline-block; padding: 8px 14px; background: #6ecdf0; border-radius: 6px; text-decoration: none; color: #000; margin-top: 6px; font-weight: bold; }
-pre { background: #111; padding: 12px; overflow-x: auto; white-space: pre-wrap; color: #dde; border: 1px solid #345; border-radius: 4px; }
-</style>
-"""
+# Armado con lista de lineas + join(), NO con comillas triples -- ver nota
+# tecnica arriba del archivo.
+ESTILO_LINEAS = [
+    "<style>",
+    "body { font-family: -apple-system, Arial, sans-serif; max-width: 720px; margin: 0 auto; padding: 0 16px 30px; background: #000; color: #eaeaea; }",
+    ".franja { height: 10px; margin: 0 -16px 24px; background: repeating-linear-gradient(90deg, #6ecdf0 0 22px, #ffffff 22px 44px); }",
+    "h1 { font-size: 24px; color: #6ecdf0; letter-spacing: 0.5px; }",
+    "h2 { font-size: 17px; margin-top: 36px; border-top: 1px solid #234; padding-top: 20px; color: #6ecdf0; }",
+    "textarea, input[type=text] { width: 100%; font-family: monospace; font-size: 14px; box-sizing: border-box; padding: 8px; background: #111; color: #eaeaea; border: 1px solid #345; border-radius: 4px; }",
+    "textarea { height: 160px; }",
+    "button { padding: 10px 18px; font-size: 15px; margin-top: 10px; cursor: pointer; background: #6ecdf0; color: #000; border: none; border-radius: 6px; font-weight: bold; }",
+    ".ayuda { color: #aab; font-size: 14px; }",
+    "a.boton { display: inline-block; padding: 8px 14px; background: #6ecdf0; border-radius: 6px; text-decoration: none; color: #000; margin-top: 6px; font-weight: bold; }",
+    "pre { background: #111; padding: 12px; overflow-x: auto; white-space: pre-wrap; color: #dde; border: 1px solid #345; border-radius: 4px; }",
+    "</style>",
+]
+ESTILO = chr(10).join(ESTILO_LINEAS)
 
-PAGINA_INICIO = """<!doctype html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Panel Satelite</title>%s</head>
-<body>
-<div class="franja"></div>
-<h1>Panel del bot</h1>
-<p class="ayuda">Todo lo que se hace a mano en este proyecto, en un solo lugar. No hace falta terminal.</p>
-
-<h2>1. Ver traders para puntuar</h2>
-<p class="ayuda">
-El bot va descubriendo wallets nuevas siguiendo una lista curada de traders de
-Robinhood Chain, pero por si solo no puede juzgar si son buenos o malos -- eso
-necesita criterio, no solo numeros. Este boton muestra esa lista cruda
-(pending_scores.json). Copiela entera junto con las instrucciones que trae
-adentro y pegela en un chat de IA (por ejemplo, conmigo); la IA le va a
-devolver un puntaje de 0 a 100 por cada wallet.
-</p>
-<a class="boton" href="/pending" target="_blank">Ver pending_scores.json</a>
-
-<h2>2. Pegar el resultado puntuado</h2>
-<p class="ayuda">
-Una vez que la IA evaluo la lista del paso 1, le devuelve un puntaje por cada
-trader. Pegue esa respuesta aca y aplique -- recien despues de este paso esos
-traders empiezan a contar para /signals, /fresh y el resto de las funciones
-del bot. Sin este paso, es como si no existieran todavia para el.
-</p>
-<form method="POST" action="/import">
-<textarea name="datos" placeholder="[{&quot;address&quot;: ...}]"></textarea>
-<br><button type="submit">Aplicar puntuacion</button>
-</form>
-
-<h2>3. Agregar un trader al roster</h2>
-<p class="ayuda">
-El bot por default solo sigue a la lista curada externa (la de "trenches").
-Si conoce o encuentra a alguien mas que le interese seguir por su cuenta,
-escriba su <b>@usuario</b> aca abajo (o pegue directamente la wallet 0x... si
-ya la tiene) y el boton resuelve el handle y lo agrega solo. Resolver un
-@usuario tiene un costo de creditos de fomoapi.io mas alto que el resto del
-bot, asi que no lo use a lo loco. Una vez agregado, todavia no tiene puntaje
--- para eso hay que repetir despues los pasos 1 y 2.
-</p>
-<form method="POST" action="/agregar">
-<input type="text" name="entrada" placeholder="@usuario o 0x...">
-<br><button type="submit">Agregar al roster</button>
-</form>
-
-</body></html>""" % ESTILO
+PAGINA_INICIO_LINEAS = [
+    "<!doctype html>",
+    "<html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">",
+    "<title>Panel Satelite</title>" + ESTILO + "</head>",
+    "<body>",
+    "<div class=\"franja\"></div>",
+    "<h1>Panel del bot</h1>",
+    "<p class=\"ayuda\">Todo lo que se hace a mano en este proyecto, en un solo lugar. No hace falta terminal.</p>",
+    "",
+    "<h2>1. Ver traders para puntuar</h2>",
+    "<p class=\"ayuda\">",
+    "El bot va descubriendo wallets nuevas siguiendo una lista curada de traders de",
+    "Robinhood Chain, pero por si solo no puede juzgar si son buenos o malos -- eso",
+    "necesita criterio, no solo numeros. Este boton muestra esa lista cruda",
+    "(pending_scores.json). Copiela entera junto con las instrucciones que trae",
+    "adentro y pegela en un chat de IA (por ejemplo, conmigo); la IA le va a",
+    "devolver un puntaje de 0 a 100 por cada wallet.",
+    "</p>",
+    "<a class=\"boton\" href=\"/pending\" target=\"_blank\">Ver pending_scores.json</a>",
+    "",
+    "<h2>2. Pegar el resultado puntuado</h2>",
+    "<p class=\"ayuda\">",
+    "Una vez que la IA evaluo la lista del paso 1, le devuelve un puntaje por cada",
+    "trader. Pegue esa respuesta aca y aplique -- recien despues de este paso esos",
+    "traders empiezan a contar para /signals, /fresh y el resto de las funciones",
+    "del bot. Sin este paso, es como si no existieran todavia para el.",
+    "</p>",
+    "<form method=\"POST\" action=\"/import\">",
+    "<textarea name=\"datos\" placeholder=\"[{&quot;address&quot;: ...}]\"></textarea>",
+    "<br><button type=\"submit\">Aplicar puntuacion</button>",
+    "</form>",
+    "",
+    "<h2>3. Agregar un trader al roster</h2>",
+    "<p class=\"ayuda\">",
+    "El bot por default solo sigue a la lista curada externa (la de \"trenches\").",
+    "Si conoce o encuentra a alguien mas que le interese seguir por su cuenta,",
+    "escriba su <b>@usuario</b> aca abajo (o pegue directamente la wallet 0x... si",
+    "ya la tiene) y el boton resuelve el handle y lo agrega solo. Resolver un",
+    "@usuario tiene un costo de creditos de fomoapi.io mas alto que el resto del",
+    "bot, asi que no lo use a lo loco. Una vez agregado, todavia no tiene puntaje",
+    "-- para eso hay que repetir despues los pasos 1 y 2.",
+    "</p>",
+    "<form method=\"POST\" action=\"/agregar\">",
+    "<input type=\"text\" name=\"entrada\" placeholder=\"@usuario o 0x...\">",
+    "<br><button type=\"submit\">Agregar al roster</button>",
+    "</form>",
+    "",
+    "</body></html>",
+]
+PAGINA_INICIO = chr(10).join(PAGINA_INICIO_LINEAS)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -188,15 +233,15 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(datos)
 
     def _pagina_resultado(self, titulo, salida):
-        pagina = (
-            "<!doctype html><html><head><meta charset=\"utf-8\">" + ESTILO + "</head><body>"
-            + "<div class=\"franja\"></div>"
-            + "<h1>" + html.escape(titulo) + "</h1>"
-            + "<pre>" + html.escape(salida) + "</pre>"
-            + "<p><a class=\"boton\" href=\"/\">Volver al inicio</a></p>"
-            + "</body></html>"
-        )
-        self._texto(pagina, "text/html; charset=utf-8")
+        partes = [
+            "<!doctype html><html><head><meta charset=\"utf-8\">" + ESTILO + "</head><body>",
+            "<div class=\"franja\"></div>",
+            "<h1>" + html.escape(titulo) + "</h1>",
+            "<pre>" + html.escape(salida) + "</pre>",
+            "<p><a class=\"boton\" href=\"/\">Volver al inicio</a></p>",
+            "</body></html>",
+        ]
+        self._texto(chr(10).join(partes), "text/html; charset=utf-8")
 
     def _leer_form(self):
         largo = int(self.headers.get("Content-Length", 0))
@@ -239,7 +284,7 @@ class Handler(BaseHTTPRequestHandler):
                     ["fomo-radar", "score", "--import", SCORED_FILE],
                     capture_output=True, text=True, timeout=60,
                 )
-                salida = resultado.stdout + "\n" + resultado.stderr
+                salida = resultado.stdout + chr(10) + resultado.stderr
             except Exception as exc:
                 salida = "Error corriendo la importacion: " + str(exc)
             self._pagina_resultado("Puntuacion aplicada", salida)
@@ -259,9 +304,9 @@ class Handler(BaseHTTPRequestHandler):
                     ["fomo-radar", "discover", "--add", wallet],
                     capture_output=True, text=True, timeout=60,
                 )
-                salida = "Resuelto a: " + wallet + "\n\n" + resultado.stdout + "\n" + resultado.stderr
+                salida = "Resuelto a: " + wallet + chr(10) + chr(10) + resultado.stdout + chr(10) + resultado.stderr
             except Exception as exc:
-                salida = "Resuelto a: " + wallet + "\n\nError agregando la wallet: " + str(exc)
+                salida = "Resuelto a: " + wallet + chr(10) + chr(10) + "Error agregando la wallet: " + str(exc)
             self._pagina_resultado("Trader agregado", salida)
             return
 
@@ -273,6 +318,8 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     activar_wal()
+
+    threading.Thread(target=monitor_memoria, daemon=True).start()
 
     threading.Thread(target=lanzar, args=("fomo-radar run", ["fomo-radar", "run"]), daemon=True).start()
 
